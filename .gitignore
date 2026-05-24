@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+backend/game-server/node_modules/
+agent-cli/node_modules/
+
+# Build / artifacts
+artifacts/
+cache/
+typechain/
+dist/
+build/
+
+# Deployment files (can be committed for testnets, but often gitignored in private forks)
+# deployments/
+
+# Environment files
+.env
+.env.local
+.env*.local
+scripts/.env.keeper
+frontend/.env.local
+backend/game-server/.env
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Hardhat / Ignition
+ignition/deployments/
+
+# Misc
+test-results/
+_experimental-uniswap-v4/

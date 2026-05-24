@@ -1,0 +1,25 @@
+{
+  "name": "salt-agent-cli",
+  "version": "0.1.0",
+  "description": "SALT AI Agent CLI - Allows autonomous agents to play Battleship and use the SALT ecosystem at the same price as humans",
+  "main": "dist/index.js",
+  "bin": {
+    "salt-agent": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/index.ts",
+    "play": "ts-node src/play-battleship.ts"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "commander": "^12.0.0",
+    "dotenv": "^16.4.5",
+    "axios": "^1.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}

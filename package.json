@@ -1,0 +1,21 @@
+{
+  "name": "salt-l3-diamond",
+  "version": "1.0.0",
+  "description": "Intern (SALT) ERC20 on ERC2535 Diamond proxy + Staking for L3 OP Stack on Base",
+  "main": "index.js",
+  "scripts": {
+    "test": "hardhat test",
+    "compile": "hardhat compile",
+    "deploy:local": "hardhat run scripts/deploy.js --network localhost",
+    "deploy:base-sepolia": "hardhat run scripts/deploy.js --network baseSepolia"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "^5.0.2",
+    "dotenv": "^16.4.5",
+    "hardhat": "^2.22.15"
+  }
+}
