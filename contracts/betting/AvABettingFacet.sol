@@ -27,8 +27,8 @@ contract AvABettingFacet is ReentrancyGuard {
         uint256 totalPool
     );
 
-    address public gameServer;
-    IERC20 public saltToken;
+    address internal gameServer;
+    IERC20 internal saltToken;
 
     // matchId => agentId => total amount bet on that agent
     mapping(uint256 => mapping(uint256 => uint256)) public betPools;
@@ -42,14 +42,22 @@ contract AvABettingFacet is ReentrancyGuard {
     mapping(uint256 => uint256) public matchTotalPool;
     mapping(uint256 => uint256) public matchWinner;
 
-    function setGameServer(address _gameServer) external {
+    function ava_setGameServer(address _gameServer) external {
         LibDiamond.enforceIsContractOwner();
         gameServer = _gameServer;
     }
 
-    function setSaltToken(address _salt) external {
+    function ava_setSaltToken(address _salt) external {
         LibDiamond.enforceIsContractOwner();
         saltToken = IERC20(_salt);
+    }
+
+    function ava_getGameServer() external view returns (address) {
+        return gameServer;
+    }
+
+    function ava_getSaltToken() external view returns (address) {
+        return address(saltToken);
     }
 
     /**

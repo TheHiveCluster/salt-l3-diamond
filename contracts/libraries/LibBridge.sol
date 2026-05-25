@@ -16,6 +16,7 @@ library LibBridge {
         address[] trustedSigners;                 // multi-sig style trusted signers for bridgeIn
         uint256 minSignatures;                    // minimum signatures required (e.g. 2)
         uint256 bridgeFeeBps;                     // fee in basis points (e.g. 10 = 0.1%)
+        address feeDistributor;                   // Moved here from facet to avoid storage collision in Diamond
     }
 
     function bridgeStorage() internal pure returns (BridgeStorage storage bs) {
@@ -59,5 +60,9 @@ library LibBridge {
             if (signers[i] == signer) return true;
         }
         return false;
+    }
+
+    function getFeeDistributor() internal view returns (address) {
+        return bridgeStorage().feeDistributor;
     }
 }

@@ -5,12 +5,16 @@
  * 
  * Usage:
  *   node scripts/keeper-update-prices.js
+ *
+ * It automatically loads variables from scripts/.env.keeper
  * 
  * For production: run with PM2 or as a systemd service.
  */
 
 const { ethers } = require("ethers");
-require("dotenv").config();
+const path = require("path");
+
+require("dotenv").config({ path: path.join(__dirname, ".env.keeper") });
 
 const DIAMOND_ADDRESS = process.env.DIAMOND_ADDRESS;
 const PRIVATE_KEY = process.env.KEEPER_PRIVATE_KEY;
@@ -29,8 +33,8 @@ async function main() {
   const gamePayment = new ethers.Contract(
     DIAMOND_ADDRESS,
     [
-      "function updatePriceHistory(uint256 currentPrice) external",
-      "function getTwapPrice() public view returns (uint256)"
+      "function game_updatePriceHistory(uint256 currentPrice) external",
+      "function game_getTwapPrice() public view returns (uint256)"
     ],
     wallet
   );
@@ -45,10 +49,10 @@ async function main() {
       // For now we use a mock price (adjust to real value)
       const mockSALTPriceFor001USD = ethers.parseUnits("0.0123", 18); // example
 
-      const tx = await gamePayment.updatePriceHistory(mockSALTPriceFor001USD);
+      const tx = await gamePayment.game_updatePriceHistory(mockSALTPriceFor001USD);
       await tx.wait();
 
-      const twap = await gamePayment.getTwapPrice();
+      const twap = await gamePayment.game_getTwapPrice();
       console.log(`[${new Date().toISOString()}] Price updated. Current TWAP: ${ethers.formatUnits(twap, 18)}`);
     } catch (err) {
       console.error("Failed to update price:", err.message);

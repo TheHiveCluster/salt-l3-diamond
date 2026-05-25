@@ -2,8 +2,11 @@
 pragma solidity ^0.8.20;
 
 interface IAvABetting {
-    function setGameServer(address _gameServer) external;
-    function setSaltToken(address _salt) external;
+    function ava_setGameServer(address _gameServer) external;
+    function ava_setSaltToken(address _salt) external;
+
+    function ava_getGameServer() external view returns (address);
+    function ava_getSaltToken() external view returns (address);
 
     function placeBet(uint256 matchId, uint256 onAgentId, uint256 amount) external;
     function settleAvABets(uint256 matchId, uint256 winningAgentId) external;

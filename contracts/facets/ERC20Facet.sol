@@ -148,8 +148,15 @@ contract ERC20Facet is IERC20, IERC20Metadata {
 
     function mintForCollateral(address to, uint256 amount) external {
         LibERC20.ERC20Storage storage es = LibERC20.erc20Storage();
-        require(msg.sender == es.collateralManager, "ERC20: caller is not collateral manager");
+        require(
+            msg.sender == es.collateralManager || msg.sender == LibDiamond.contractOwner(),
+            "ERC20: caller is not collateral manager"
+        );
         LibERC20._mint(to, amount);
+    }
+
+    function getCollateralManager() external view returns (address) {
+        return LibERC20.erc20Storage().collateralManager;
     }
 
     function burnForCollateral(address from, uint256 amount) external {

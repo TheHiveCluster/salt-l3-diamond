@@ -36,6 +36,7 @@ The protocol combines:
 
 - **Deployment & Developer Experience**
   - One-shot deployment script now fully supports testnets (`--reset`, `--verify`)
+- Added native support for BuildBear sandboxes as the primary **Alpha** testing environment (separate `--network buildbear`)
   - Compilation issues with OpenZeppelin v5 resolved
   - Added root `.env.example` and improved `.gitignore`
   - Legacy code cleanup in BridgeFacet and NFT contracts

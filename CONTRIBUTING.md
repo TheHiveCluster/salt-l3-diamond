@@ -159,6 +159,7 @@ node scripts/keeper-update-prices.js
 | Start full local environment              | `./scripts/start-local.sh` |
 | Deploy locally                            | `npx hardhat run scripts/deploy-one-shot.ts --network localhost` |
 | Deploy to Base Sepolia                    | `... --network baseSepolia --verify` |
+| Deploy to BuildBear (Alpha)               | `... --network buildbear` (set BUILDBEAR_* env vars) |
 | Clean redeployment                        | `... -- --reset` |
 | Deploy only core system                   | `... -- --core-only` |
 | Deploy only game + ZK system              | `... -- --game-only` |

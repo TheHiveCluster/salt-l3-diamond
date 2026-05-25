@@ -7,6 +7,7 @@
  * Usage:
  *   npx hardhat run scripts/deploy-one-shot.ts --network localhost
  *   npx hardhat run scripts/deploy-one-shot.ts --network baseSepolia
+ *   npx hardhat run scripts/deploy-one-shot.ts --network buildbear   (Alpha - set BUILDBEAR_* env vars)
  */
 
 import { ethers } from "hardhat";
@@ -17,14 +18,17 @@ async function main() {
   const networkName = process.env.HARDHAT_NETWORK || "localhost";
   const args = process.argv.slice(2);
 
-  const shouldReset = args.includes("--reset");
+  // Support both --reset flag and RESET=true env var (more reliable in PowerShell)
+  const shouldReset = args.includes("--reset") || 
+                      process.env.RESET === "true" || 
+                      process.env.RESET === "1";
   const coreOnly = args.includes("--core-only");
   const gameOnly = args.includes("--game-only");
   const shouldVerify = args.includes("--verify");
 
   console.log(`\n🚀 SALT Protocol - One-Shot Full Deployment`);
   console.log(`   Network: ${networkName}`);
-  if (shouldReset) console.log("   --reset flag detected");
+  if (shouldReset) console.log("   --reset flag detected (via arg or RESET env var)");
   if (coreOnly) console.log("   Mode: --core-only");
   if (gameOnly) console.log("   Mode: --game-only");
   if (shouldVerify) console.log("   --verify flag detected");
@@ -125,15 +129,16 @@ async function main() {
   const diamondCut = await ethers.getContractAt("IDiamondCut", diamondAddr);
   const cut = [];
 
-  // Helper to get selectors
-  function getSelectors(contract: any) {
-    const sigs: string[] = [];
-    for (const frag of contract.interface.fragments) {
-      if (frag.type === "function") {
-        sigs.push(contract.interface.getFunction(frag.name).selector);
+  // Helper to get selectors (safe with overloaded functions like burn/mint)
+  function getSelectors(contract: any): string[] {
+    const signatures: string[] = [];
+    for (const fragment of contract.interface.fragments) {
+      if (fragment.type === "function") {
+        const sighash = contract.interface.getFunction(fragment.format("sighash"))!.selector;
+        signatures.push(sighash);
       }
     }
-    return sigs;
+    return signatures;
   }
 
   // Add all facets (except DiamondCut which is already there)
@@ -151,9 +156,67 @@ async function main() {
     });
   }
 
+  // === Batch the diamond cuts (much more reliable on BuildBear / L3 sandboxes) ===
+  const BATCH_SIZE = 1;
+  const GAS_LIMIT = process.env.GAS_LIMIT ? Number(process.env.GAS_LIMIT) : 8_000_000;
+
+  const skipBridge = process.env.SKIP_BRIDGE === "true" || process.env.SKIP_BRIDGE === "1";
+
   const initCalldata = diamondInit.interface.encodeFunctionData("init");
-  const tx = await diamondCut.diamondCut(cut, await diamondInit.getAddress(), initCalldata);
-  await tx.wait();
+
+  for (let i = 0; i < cut.length; i += BATCH_SIZE) {
+    const batch = cut.slice(i, i + BATCH_SIZE);
+    const facetNames = facetsToCut.slice(i, i + BATCH_SIZE);
+
+    // Skip BridgeFacet if requested (it currently reverts on this BuildBear sandbox)
+    if (skipBridge && facetNames.includes("BridgeFacet")) {
+      console.log("Skipping BridgeFacet (SKIP_BRIDGE=true)");
+      continue;
+    }
+
+    const isFirstBatch = i === 0;
+
+    console.log(`\n=== Attempting to cut: ${facetNames.join(", ")} ===`);
+    console.log(`  Selectors to add (${batch[0].functionSelectors.length}):`);
+    batch[0].functionSelectors.forEach((sel: string, idx: number) => {
+      if (idx < 8) console.log(`    ${sel}`);
+    });
+    if (batch[0].functionSelectors.length > 8) console.log(`    ... +${batch[0].functionSelectors.length - 8} more`);
+
+    try {
+      const tx = await diamondCut.diamondCut(
+        batch,
+        isFirstBatch ? await diamondInit.getAddress() : ethers.ZeroAddress,
+        isFirstBatch ? initCalldata : "0x",
+        { gasLimit: GAS_LIMIT }
+      );
+
+      const receipt = await tx.wait();
+      console.log(`✓ Cut successful: ${facetNames.join(", ")} | Gas used: ${receipt?.gasUsed}`);
+
+    } catch (error: any) {
+      console.error(`✗ Failed to cut: ${facetNames.join(", ")}`);
+
+      // Enhanced logging for selector collision debugging
+      console.error(`  Number of selectors in this batch: ${batch[0].functionSelectors.length}`);
+      console.error("  First 10 selectors being added:");
+      batch[0].functionSelectors.slice(0, 10).forEach((sel: string) => console.error(`    ${sel}`));
+
+      // Best-effort simulation to extract revert reason
+      try {
+        await diamondCut.diamondCut.staticCall(
+          batch,
+          isFirstBatch ? await diamondInit.getAddress() : ethers.ZeroAddress,
+          isFirstBatch ? initCalldata : "0x"
+        );
+      } catch (simError: any) {
+        console.error("Revert reason (from staticCall):", 
+          simError?.reason || simError?.shortMessage || simError?.message || simError);
+      }
+      throw error;
+    }
+  }
+
   console.log("All facets cut successfully into Diamond");
 
   // ==========================================
@@ -193,10 +256,10 @@ async function main() {
 
   // GamePaymentFacet
   const gamePayment = await ethers.getContractAt("GamePaymentFacet", diamondAddr);
-  await (await gamePayment.initializeGamePayment(diamondAddr)).wait();
-  await (await gamePayment.setFeeDistributor(await feeDistributor.getAddress())).wait();
-  await (await gamePayment.setGameServer(deployer.address)).wait(); // For testing
-  await (await gamePayment.setEntryFeeSALT(ethers.parseUnits("0.01", 18))).wait();
+  await (await gamePayment.game_initialize(diamondAddr)).wait();
+  await (await gamePayment.game_setFeeDistributor(await feeDistributor.getAddress())).wait();
+  await (await gamePayment.game_setGameServer(deployer.address)).wait(); // For testing
+  await (await gamePayment.game_setEntryFeeSALT(ethers.parseUnits("0.01", 18))).wait();
   console.log("GamePaymentFacet initialized");
 
   // AgentIdentityFacet (Phase 1)
@@ -205,13 +268,13 @@ async function main() {
   console.log("AgentIdentityFacet initialized (gameServer wired)");
 
   // Wire the same gameServer on GamePaymentFacet (in case it wasn't)
-  await (await gamePayment.setGameServer(deployer.address)).wait();
+  await (await gamePayment.game_setGameServer(deployer.address)).wait();
   console.log("setGameServer() wired on both GamePaymentFacet and AgentIdentityFacet");
 
   // AvABettingFacet (Phase 4)
   const avab = await ethers.getContractAt("AvABettingFacet", diamondAddr);
-  await (await avab.setGameServer(deployer.address)).wait();
-  await (await avab.setSaltToken(diamondAddr)).wait(); // SALT lives on the diamond
+  await (await avab.ava_setGameServer(deployer.address)).wait();
+  await (await avab.ava_setSaltToken(diamondAddr)).wait(); // SALT lives on the diamond
   console.log("AvABettingFacet initialized and wired");
 
   // ==========================================
@@ -235,9 +298,9 @@ async function main() {
 
   // Mint 3 sample heroes to deployer
   const sampleHeroes = [
-    { id: 1, uri: "ipfs://hero1", attrs: { level: 1, power: 50, rarity: 1, gameId: ethers.ZeroHash } },
-    { id: 2, uri: "ipfs://hero2", attrs: { level: 3, power: 120, rarity: 2, gameId: ethers.ZeroHash } },
-    { id: 3, uri: "ipfs://hero3", attrs: { level: 5, power: 200, rarity: 3, gameId: ethers.ZeroHash } },
+    { id: 1, uri: "ipfs://hero1", attrs: { level: 1, power: 50, rarity: 1, gameId: ethers.ZeroHash, lastUsed: 0 } },
+    { id: 2, uri: "ipfs://hero2", attrs: { level: 3, power: 120, rarity: 2, gameId: ethers.ZeroHash, lastUsed: 0 } },
+    { id: 3, uri: "ipfs://hero3", attrs: { level: 5, power: 200, rarity: 3, gameId: ethers.ZeroHash, lastUsed: 0 } },
   ];
 
   for (const hero of sampleHeroes) {
@@ -280,39 +343,69 @@ async function main() {
   const deploymentsDir = path.join(__dirname, "../deployments");
   if (!fs.existsSync(deploymentsDir)) fs.mkdirSync(deploymentsDir, { recursive: true });
 
-  const filePath = path.join(deploymentsDir, `${networkName}.json`);
+  // Use clean name for BuildBear deploys
+  const deploymentFileName = networkName === "buildbear" ? "BuildBear" : networkName;
+  const filePath = path.join(deploymentsDir, `${deploymentFileName}.json`);
   fs.writeFileSync(filePath, JSON.stringify(deployment, null, 2));
 
   console.log(`\n✅ Deployment completed successfully!`);
   console.log(`   Diamond Address: ${diamondAddr}`);
-  console.log(`   Deployment saved to: deployments/${networkName}.json\n`);
+  console.log(`   Deployment saved to: deployments/${deploymentFileName}.json\n`);
 
   // ==========================================
   // 6. AUTO-GENERATE .env FILES
   // ==========================================
   console.log("=== 6. Generating environment files ===");
 
-  // Frontend .env
+  // === Frontend .env.local (smart overwrite) ===
   const frontendEnvPath = path.join(__dirname, "../frontend/.env.local");
-  const frontendEnvContent = `NEXT_PUBLIC_DIAMOND_ADDRESS=${diamondAddr}
-NEXT_PUBLIC_NETWORK=${networkName}
-# Add your WalletConnect Project ID below
-NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=your_project_id_here
-`;
-  fs.writeFileSync(frontendEnvPath, frontendEnvContent);
-  console.log("   Generated: frontend/.env.local");
+  const label = process.env.NEXT_PUBLIC_BUILDBEAR_NETWORK_LABEL || process.env.BUILDBEAR_LABEL || "BuildBear";
 
-  // Keeper .env
+  let existingEnv = "";
+  if (fs.existsSync(frontendEnvPath)) {
+    existingEnv = fs.readFileSync(frontendEnvPath, "utf8");
+  }
+
+  // Remove any previous BuildBear block so we can overwrite cleanly
+  existingEnv = existingEnv.replace(
+    /\n?# === BuildBear Alpha[\s\S]*?(?=\n#|$)/g,
+    ""
+  ).trim();
+
+  let buildbearBlock = "";
+  if (networkName === "buildbear") {
+    buildbearBlock = `
+
+# === BuildBear Alpha (overwritten by deploy script) ===
+NEXT_PUBLIC_BUILDBEAR_RPC=${process.env.BUILDBEAR_RPC || ""}
+NEXT_PUBLIC_BUILDBEAR_CHAIN_ID=${process.env.BUILDBEAR_CHAIN_ID || ""}
+NEXT_PUBLIC_BUILDBEAR_NETWORK_LABEL=${label}
+NEXT_PUBLIC_DIAMOND_ADDRESS=${diamondAddr}
+NEXT_PUBLIC_NETWORK=${networkName}
+`;
+  }
+
+  const finalFrontendEnv = existingEnv + buildbearBlock;
+  fs.writeFileSync(frontendEnvPath, finalFrontendEnv.trim() + "\n");
+  console.log("   Updated: frontend/.env.local (BuildBear vars overwritten)");
+
+  // Keeper .env - improved for BuildBear
   const keeperEnvPath = path.join(__dirname, "../scripts/.env.keeper");
+
+  let keeperRpc = process.env.RPC_URL || "http://127.0.0.1:8545";
+  if (networkName === "buildbear" && process.env.BUILDBEAR_RPC) {
+    keeperRpc = process.env.BUILDBEAR_RPC;
+  }
+
   const keeperEnvContent = `DIAMOND_ADDRESS=${diamondAddr}
 KEEPER_PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE
-RPC_URL=${process.env.RPC_URL || "http://127.0.0.1:8545"}
+RPC_URL=${keeperRpc}
 `;
   fs.writeFileSync(keeperEnvPath, keeperEnvContent);
   console.log("   Generated: scripts/.env.keeper\n");
 
-  // Optional verification
-  if (shouldVerify && networkName !== "localhost") {
+  // Optional verification (skip for buildbear sandboxes)
+  if (shouldVerify && networkName !== "localhost" && networkName !== "buildbear") {
     console.log("\n=== Verifying contracts on block explorer ===");
     try {
       const { run } = await import("hardhat");
@@ -326,11 +419,58 @@ RPC_URL=${process.env.RPC_URL || "http://127.0.0.1:8545"}
     }
   }
 
-  console.log("Next steps:");
-  console.log("1. (Optional) Set USDC address on CollateralFacet");
-  console.log("2. Update KEEPER_PRIVATE_KEY in scripts/.env.keeper");
-  console.log("3. Start keeper: node scripts/keeper-update-prices.js");
-  console.log("4. Start game server + frontend");
+  // ==========================================
+  // 7. POST-DEPLOY STEPS (BuildBear)
+  // ==========================================
+  if (networkName === "buildbear") {
+    console.log("\n[BuildBear] Alpha sandbox deploy complete.");
+    console.log("  - Deployment saved to deployments/BuildBear.json");
+    console.log("  - frontend/.env.local has been updated with BuildBear vars.");
+
+    // === Y/N Prompt for Collateral Setup ===
+    const readline = require("readline");
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    const runCollateralSetup = await new Promise<boolean>((resolve) => {
+      rl.question("\nRun Collateral / USDC setup now? (y/n): ", (answer: string) => {
+        rl.close();
+        resolve(answer.toLowerCase().startsWith("y"));
+      });
+    });
+
+    if (runCollateralSetup) {
+      console.log("\n=== Running Collateral Setup ===\n");
+      try {
+        // Set env so the setup script picks up the just-deployed diamond
+        process.env.DIAMOND_ADDRESS = diamondAddr;
+        await import("./setup-collateral-for-testing.js");
+      } catch (err) {
+        console.error("Collateral setup encountered an error:", (err as Error).message);
+        console.log("You can run it manually later with:");
+        console.log("  npx hardhat run scripts/setup-collateral-for-testing.js --network buildbear");
+      }
+    } else {
+      console.log("\nYou can run it later with:");
+      console.log("  npx hardhat run scripts/setup-collateral-for-testing.js --network buildbear");
+    }
+
+    console.log("\n=== Next Steps ===");
+    console.log("1. Update KEEPER_PRIVATE_KEY in scripts/.env.keeper");
+    console.log("2. Start keeper:  node scripts/keeper-update-prices.js");
+    console.log("3. Start frontend: cd frontend && npm run dev");
+    console.log("4. (Optional) Start game server in another terminal");
+    console.log("\nSwitch to the BuildBear network in RainbowKit / your wallet.");
+  } else {
+    // Non-BuildBear fallback (kept for other networks)
+    console.log("Next steps:");
+    console.log("1. (Optional) Set USDC address on CollateralFacet");
+    console.log("2. Update KEEPER_PRIVATE_KEY in scripts/.env.keeper");
+    console.log("3. Start keeper: node scripts/keeper-update-prices.js");
+    console.log("4. Start game server + frontend");
+  }
 }
 
 main().catch((error) => {

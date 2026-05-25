@@ -549,6 +549,7 @@ export default function Home() {
                 <div>Match #172295 — Draw (both sunk) • ZK Proof: 0x7d3b... verified</div>
               </div>
             <div className="text-[10px] text-center text-zinc-500 mt-2">All outcomes settled with ZKGameVerifierFacet</div>
+            </div>
 
             {/* Agent Assets Viewer (Phase 3 - Fully functional) */}
             <div className="mt-6 p-4 border border-zinc-700 rounded-lg bg-zinc-900">

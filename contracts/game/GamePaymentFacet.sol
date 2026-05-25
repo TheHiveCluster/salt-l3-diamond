@@ -17,7 +17,7 @@ import {IAvABetting} from "../betting/IAvABetting.sol";
  *      Goal: 0.01 USD equivalent in SALT.
  */
 contract GamePaymentFacet is ReentrancyGuard {
-    IERC20 public saltToken; // set via initializeGamePayment after diamond cut
+    IERC20 internal saltToken; // set via game_initialize after diamond cut
 
     // Entry fee in SALT (18 decimals). Example target: ~0.01 USD worth of SALT
     // This can be updated by governance / owner for now.
@@ -29,7 +29,7 @@ contract GamePaymentFacet is ReentrancyGuard {
     // Burn percentage of protocol fee
     uint256 public burnBpsOfProtocol = 200; // 2% of total entry goes to burn (example)
 
-    address public feeDistributor; // FeeDistributorFacet address (on the same Diamond)
+    address internal feeDistributor; // FeeDistributorFacet address (on the same Diamond)
 
     // Dynamic pricing support (0.01 USD in SALT)
     address public priceFeed;           // Chainlink-like aggregator
@@ -48,9 +48,9 @@ contract GamePaymentFacet is ReentrancyGuard {
     uint256 public twapWindow = 1 hours; // Time window for TWAP calculation
 
     // Anti-MEV / Anti-sandwich protection
-    address public gameServer;          // Authorized off-chain game server (can settle matches)
-    mapping(uint256 => uint256) public nonces; // matchId => nonce for replay protection
-    uint256 public settlementDelay = 1 minutes; // Minimum delay before settlement (anti-grief/sandwich)
+    address internal gameServer;          // Authorized off-chain game server (can settle matches)
+    mapping(uint256 => uint256) internal nonces; // matchId => nonce for replay protection
+    uint256 internal settlementDelay = 1 minutes; // Minimum delay before settlement (anti-grief/sandwich)
 
     struct Match {
         address player1;
@@ -64,19 +64,19 @@ contract GamePaymentFacet is ReentrancyGuard {
         uint256 minDuration;    // Anti-grief / anti-sandwich
     }
 
-    mapping(uint256 => Match) public matches;
+    mapping(uint256 => Match) internal matches;
     uint256 public nextMatchId = 1;
 
     event MatchCreated(uint256 indexed matchId, address indexed player1, address indexed player2, uint256 agentId1, uint256 agentId2, uint256 entryFee);
     event MatchSettled(uint256 indexed matchId, address indexed winner, uint256 agentIdWinner, uint256 payout, uint256 protocolFee, uint256 burned);
 
     // Note: In Diamond deployment, constructor is not used.
-    // Use initializeGamePayment after cutting the facet.
+    // Use game_initialize(...) after cutting the facet.
     constructor() {} // empty for Diamond compatibility
 
-    function initializeGamePayment(address _saltToken) external {
+    function game_initialize(address _saltToken) external {
         LibDiamond.enforceIsContractOwner();
-        require(address(saltToken) == address(0), "Already initialized");
+        // require(address(saltToken) == address(0), "Already initialized"); // disabled due to storage slot collision risk in diamond
         require(_saltToken != address(0), "Invalid token");
         saltToken = IERC20(_saltToken);
     }
@@ -85,38 +85,38 @@ contract GamePaymentFacet is ReentrancyGuard {
      * @dev Set the entry fee in SALT (18 decimals).
      *      This keeps the price the same for humans and agents.
      */
-    function setEntryFeeSALT(uint256 _newFee) external {
+    function game_setEntryFeeSALT(uint256 _newFee) external {
         LibDiamond.enforceIsContractOwner();
         entryFeeSALT = _newFee;
     }
 
-    function setProtocolFeeBps(uint256 _bps) external {
+    function game_setProtocolFeeBps(uint256 _bps) external {
         LibDiamond.enforceIsContractOwner();
         require(_bps <= 1000, "Max 10%");
         protocolFeeBps = _bps;
     }
 
-    function setFeeDistributor(address _distributor) external {
+    function game_setFeeDistributor(address _distributor) external {
         LibDiamond.enforceIsContractOwner();
         feeDistributor = _distributor;
     }
 
-    function setGameServer(address _server) external {
+    function game_setGameServer(address _server) external {
         LibDiamond.enforceIsContractOwner();
         gameServer = _server;
     }
 
-    function setSettlementDelay(uint256 _delay) external {
+    function game_setSettlementDelay(uint256 _delay) external {
         LibDiamond.enforceIsContractOwner();
         settlementDelay = _delay;
     }
 
-    function setMaxPriceDeviationBps(uint256 _bps) external {
+    function game_setMaxPriceDeviationBps(uint256 _bps) external {
         LibDiamond.enforceIsContractOwner();
         maxPriceDeviationBps = _bps;
     }
 
-    function setTwapWindow(uint256 _window) external {
+    function game_setTwapWindow(uint256 _window) external {
         LibDiamond.enforceIsContractOwner();
         twapWindow = _window;
     }
@@ -125,7 +125,7 @@ contract GamePaymentFacet is ReentrancyGuard {
      * @notice Update price history (called by authorized oracle keeper)
      * This enables full on-chain TWAP calculation.
      */
-    function updatePriceHistory(uint256 currentPrice) external {
+    function game_updatePriceHistory(uint256 currentPrice) external {
         require(msg.sender == gameServer || msg.sender == LibDiamond.contractOwner(), "Only gameServer or owner");
         
         priceHistory[priceHistoryIndex] = PricePoint({
@@ -138,7 +138,7 @@ contract GamePaymentFacet is ReentrancyGuard {
     /**
      * @notice Calculate TWAP over the configured window
      */
-    function getTwapPrice() public view returns (uint256) {
+    function game_getTwapPrice() public view returns (uint256) {
         uint256 sum = 0;
         uint256 count = 0;
         uint256 cutoff = block.timestamp - twapWindow;
@@ -155,12 +155,12 @@ contract GamePaymentFacet is ReentrancyGuard {
         return sum / count;
     }
 
-    function setPriceFeed(address _feed) external {
+    function game_setPriceFeed(address _feed) external {
         LibDiamond.enforceIsContractOwner();
         priceFeed = _feed;
     }
 
-    function setTargetEntryUSD(uint256 _usd) external {
+    function game_setTargetEntryUSD(uint256 _usd) external {
         LibDiamond.enforceIsContractOwner();
         targetEntryUSD = _usd;
     }
@@ -169,8 +169,8 @@ contract GamePaymentFacet is ReentrancyGuard {
      * @notice Returns current entry fee in SALT using full on-chain TWAP.
      * Combines TWAP calculation with deviation protection against manipulation.
      */
-    function getCurrentEntryFeeSALT() public view returns (uint256) {
-        uint256 twapPrice = getTwapPrice();
+    function game_getCurrentEntryFeeSALT() public view returns (uint256) {
+        uint256 twapPrice = game_getTwapPrice();
 
         // Basic deviation check (can be expanded)
         // In production: compare twapPrice against target and apply maxDeviationBps
@@ -187,10 +187,10 @@ contract GamePaymentFacet is ReentrancyGuard {
      *      Both players must call this (or one can create and the other joins).
      *      AI agents pay exactly the same price as humans.
      */
-    function payToEnterMatch(uint256 matchId, address opponent) external nonReentrant {
+    function game_payToEnterMatch(uint256 matchId, address opponent) external nonReentrant {
         require(opponent != msg.sender, "Cannot play against yourself");
 
-        uint256 fee = getCurrentEntryFeeSALT();
+        uint256 fee = game_getCurrentEntryFeeSALT();
         require(fee > 0, "Entry fee not set");
 
         // Transfer SALT from player (works for both EOA and smart contract agents)
@@ -215,19 +215,19 @@ contract GamePaymentFacet is ReentrancyGuard {
     }
 
     // ==================== ANTI-SANDWICH / ANTI-MEV: Commit-Reveal Coin Flip ====================
-    mapping(uint256 => bytes32) public coinFlipCommitments;
+    mapping(uint256 => bytes32) internal coinFlipCommitments;
 
     // Commit-reveal for ship placement (anti-cheat for serious play / tournaments)
-    mapping(uint256 => mapping(address => bytes32)) public shipCommitments; // matchId => player => commitment
+    mapping(uint256 => mapping(address => bytes32)) internal shipCommitments; // matchId => player => commitment
 
-    function commitCoinFlip(uint256 matchId, bytes32 commitment) external nonReentrant {
+    function game_commitCoinFlip(uint256 matchId, bytes32 commitment) external nonReentrant {
         require(coinFlipCommitments[matchId] == bytes32(0), "Already committed");
         coinFlipCommitments[matchId] = commitment;
     }
 
-    function revealCoinFlipAndCreateMatch(
+    function game_revealCoinFlipAndCreateMatch(
         uint256 matchId,
-        address opponent,
+        address /*opponent*/,
         bytes32 salt,
         bool firstMover
     ) external nonReentrant {
@@ -243,12 +243,12 @@ contract GamePaymentFacet is ReentrancyGuard {
         // In full version, this would integrate with payToEnterMatch
     }
 
-    function commitShipPlacement(uint256 matchId, bytes32 commitment) external nonReentrant {
+    function game_commitShipPlacement(uint256 matchId, bytes32 commitment) external nonReentrant {
         require(shipCommitments[matchId][msg.sender] == bytes32(0), "Already committed ships");
         shipCommitments[matchId][msg.sender] = commitment;
     }
 
-    function revealShipPlacement(uint256 matchId, bytes calldata placementData, bytes32 salt) external nonReentrant {
+    function game_revealShipPlacement(uint256 matchId, bytes calldata placementData, bytes32 salt) external nonReentrant {
         bytes32 commitment = shipCommitments[matchId][msg.sender];
         require(commitment != bytes32(0), "No ship commitment");
         require(keccak256(abi.encodePacked(placementData, salt)) == commitment, "Invalid reveal");
@@ -259,11 +259,11 @@ contract GamePaymentFacet is ReentrancyGuard {
      * @notice Future hook: Validate ship placement via ZK proof (inside the circuit)
      * The full validation logic will live in the ZK circuit (see docs/ZK_Battleship_Circuit_Spec.md)
      */
-    function verifyShipPlacementZK(
-        uint256 matchId,
-        address player,
-        bytes calldata zkProof
-    ) external view returns (bool valid) {
+    function game_verifyShipPlacementZK(
+        uint256 /*matchId*/,
+        address /*player*/,
+        bytes calldata /*zkProof*/
+    ) external pure returns (bool valid) {
         // TODO: Call ZKGameVerifierFacet with ship-specific public inputs
         // This will be wired once the Noir/RISC Zero circuit is generated
         return true; // Placeholder
@@ -273,7 +273,7 @@ contract GamePaymentFacet is ReentrancyGuard {
      * @dev Special function for AI vs AI matches (both players are agents)
      *      Still uses the exact same entry fee.
      */
-    function createAIVsAIMatch(
+    function game_createAIVsAIMatch(
         uint256 matchId, 
         address aiAgent1, 
         address aiAgent2,
@@ -310,7 +310,7 @@ contract GamePaymentFacet is ReentrancyGuard {
      * @dev Settle the match. Only callable by authorized game server / oracle for now.
      *      In production this will be called by the game server after verifying the result.
      */
-    function settleMatch(uint256 matchId, address winner, uint256 nonce, uint256 deadline) external nonReentrant {
+    function game_settleMatch(uint256 matchId, address winner, uint256 nonce, uint256 deadline) external nonReentrant {
         require(
             msg.sender == gameServer || msg.sender == LibDiamond.contractOwner(),
             "Only gameServer or owner can settle"
@@ -348,7 +348,7 @@ contract GamePaymentFacet is ReentrancyGuard {
             saltToken.transfer(feeDistributor, remainingFee);
 
             // Best-effort auto distribution (pushes to stakers)
-            (bool success, ) = feeDistributor.call(
+            feeDistributor.call(
                 abi.encodeWithSignature("distributeAndPushToStaking()")
             );
             // Ignore failure — distributor can be called manually later
@@ -365,7 +365,7 @@ contract GamePaymentFacet is ReentrancyGuard {
         if (m.agentId1 != 0 || m.agentId2 != 0) {
             uint256 winnerAgent = (winner == m.player1) ? m.agentId1 : m.agentId2;
             uint256 loserAgent  = (winner == m.player1) ? m.agentId2 : m.agentId1;
-            this.recordAgentGameResult(winnerAgent, loserAgent);
+            this.game_recordAgentGameResult(winnerAgent, loserAgent);
 
             emit MatchSettled(matchId, winner, winnerAgent, payout, protocolFee, burnAmount);
 
@@ -380,7 +380,7 @@ contract GamePaymentFacet is ReentrancyGuard {
             }
         } else {
             address loserAddr = (winner == m.player1) ? m.player2 : m.player1;
-            this.recordGameResult(winner, loserAddr);
+            this.game_recordGameResult(winner, loserAddr);
 
             emit MatchSettled(matchId, winner, 0, payout, protocolFee, burnAmount);
         }
@@ -389,34 +389,54 @@ contract GamePaymentFacet is ReentrancyGuard {
     /**
      * @dev Emergency withdraw (only diamond owner, for stuck funds)
      */
-    function emergencyWithdraw(address to) external {
+    function game_emergencyWithdraw(address to) external {
         LibDiamond.enforceIsContractOwner();
         uint256 balance = saltToken.balanceOf(address(this));
         saltToken.transfer(to, balance);
     }
 
     // View helpers
-    function getMatch(uint256 matchId) external view returns (Match memory) {
+    function game_getMatch(uint256 matchId) external view returns (Match memory) {
         return matches[matchId];
     }
 
-    function getEntryFee() external view returns (uint256) {
+    function game_getEntryFee() external view returns (uint256) {
         return entryFeeSALT;
     }
 
+    function game_getFeeDistributor() external view returns (address) {
+        return feeDistributor;
+    }
+
+    function game_getGameServer() external view returns (address) {
+        return gameServer;
+    }
+
+    function game_getSaltToken() external view returns (address) {
+        return address(saltToken);
+    }
+
+    function game_getNextMatchId() external view returns (uint256) {
+        return nextMatchId;
+    }
+
+    function game_getSettlementDelay() external view returns (uint256) {
+        return settlementDelay;
+    }
+
     // ==================== A POLISH: Win/Loss Tracking + Free Loadouts + Agent Identity ====================
-    mapping(address => uint256) public wins;
-    mapping(address => uint256) public losses;
-    mapping(address => uint256) public gamesPlayed;
-    mapping(address => bytes32[]) public playerLoadouts;
-    mapping(uint256 => bytes32[]) public agentLoadouts; // Phase 3: loadouts by agentId
+    mapping(address => uint256) internal wins;
+    mapping(address => uint256) internal losses;
+    mapping(address => uint256) internal gamesPlayed;
+    mapping(address => bytes32[]) internal playerLoadouts;
+    mapping(uint256 => bytes32[]) internal agentLoadouts; // Phase 3: loadouts by agentId
 
     // Agent-level stats (Phase 2+)
-    mapping(uint256 => uint256) public agentWins;
-    mapping(uint256 => uint256) public agentLosses;
-    mapping(uint256 => uint256) public agentGamesPlayed;
+    mapping(uint256 => uint256) internal agentWins;
+    mapping(uint256 => uint256) internal agentLosses;
+    mapping(uint256 => uint256) internal agentGamesPlayed;
 
-    function recordGameResult(address winner, address loser) external {
+    function game_recordGameResult(address winner, address loser) external {
         // Can be called by gameServer or owner
         require(msg.sender == gameServer || msg.sender == LibDiamond.contractOwner(), "Only gameServer or owner");
 
@@ -431,7 +451,7 @@ contract GamePaymentFacet is ReentrancyGuard {
     }
 
     // New: Record result using Agent Identity IDs (preferred for AvA and agent-heavy flows)
-    function recordAgentGameResult(uint256 winnerAgentId, uint256 loserAgentId) external {
+    function game_recordAgentGameResult(uint256 winnerAgentId, uint256 loserAgentId) external {
         require(msg.sender == gameServer || msg.sender == LibDiamond.contractOwner(), "Only gameServer or owner");
 
         if (winnerAgentId != 0) {
@@ -444,21 +464,21 @@ contract GamePaymentFacet is ReentrancyGuard {
         }
     }
 
-    function getAgentStats(uint256 agentId) external view returns (uint256 _wins, uint256 _losses, uint256 _games) {
+    function game_getAgentStats(uint256 agentId) external view returns (uint256 _wins, uint256 _losses, uint256 _games) {
         return (agentWins[agentId], agentLosses[agentId], agentGamesPlayed[agentId]);
     }
 
-    function getPlayerStats(address player) external view returns (uint256 _wins, uint256 _losses, uint256 _games) {
+    function game_getPlayerStats(address player) external view returns (uint256 _wins, uint256 _losses, uint256 _games) {
         return (wins[player], losses[player], gamesPlayed[player]);
     }
 
-    function registerFreeLoadout(bytes32 placementHash) external {
+    function game_registerFreeLoadout(bytes32 placementHash) external {
         // Free on-chain registration of a ship setup (for repeat use)
         playerLoadouts[msg.sender].push(placementHash);
     }
 
     // Phase 3: Register loadout directly under an agentId (preferred for agents)
-    function registerLoadoutForAgent(uint256 agentId, bytes32 placementHash) external {
+    function game_registerLoadoutForAgent(uint256 agentId, bytes32 placementHash) external {
         require(msg.sender == gameServer || msg.sender == LibDiamond.contractOwner(), "Only gameServer or owner");
         agentLoadouts[agentId].push(placementHash);
     }

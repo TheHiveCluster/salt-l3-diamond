@@ -12,10 +12,10 @@
     "play": "ts-node src/play-battleship.ts"
   },
   "dependencies": {
-    "ethers": "^6.13.0",
+    "axios": "^1.7.0",
     "commander": "^12.0.0",
     "dotenv": "^16.4.5",
-    "axios": "^1.7.0"
+    "ethers": "^6.16.0"
   },
   "devDependencies": {
     "@types/node": "^20.12.0",

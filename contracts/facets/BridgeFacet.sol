@@ -13,9 +13,8 @@ import { IERC20 } from "../interfaces/IERC20.sol";
 import { NFTManagerFacet } from "../nft/facets/NFTManagerFacet.sol";
 import { INFTManager } from "../nft/interfaces/INFTManager.sol";
 import { ReputationManagerFacet } from "../nft/reputation/ReputationManagerFacet.sol";
-import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract BridgeFacet is ReentrancyGuard {
+contract BridgeFacet {
     using LibBridge for LibBridge.BridgeStorage;
 
     event BridgeOut(
@@ -39,12 +38,12 @@ contract BridgeFacet is ReentrancyGuard {
     event TrustedSignerUpdated(address signer); // Legacy event (now using trustedSigners array)
     event BridgeFeeUpdated(uint256 feeBps);
 
-    address public feeDistributor; // FeeDistributorFacet
+    // Note: feeDistributor moved into LibBridge.BridgeStorage to prevent storage collisions in the Diamond
 
     // ========== User Functions ==========
 
     /// @notice Lock/burn SALT to bridge out to another chain
-    function bridgeOut(uint256 toChain, bytes calldata recipient, uint256 amount) external nonReentrant {
+    function bridgeOut(uint256 toChain, bytes calldata recipient, uint256 amount) external {
         require(LibBridge.isSupportedChain(toChain), "Bridge: chain not supported");
         require(amount > 0, "Bridge: amount must be > 0");
 
@@ -154,9 +153,10 @@ contract BridgeFacet is ReentrancyGuard {
             }
 
             // Send remaining fee (minus burn) to FeeDistributor
-            if (feeDistributor != address(0) && fee > 0) {
-                uint256 toDistributor = fee / 2; // still split the remaining
-                IERC20(address(this)).transfer(feeDistributor, toDistributor);
+            address distributor = LibBridge.getFeeDistributor();
+            if (distributor != address(0) && fee > 0) {
+                uint256 toDistributor = fee / 2;
+                IERC20(address(this)).transfer(distributor, toDistributor);
             }
         }
 
@@ -184,31 +184,31 @@ contract BridgeFacet is ReentrancyGuard {
 
     // ========== Admin Functions ==========
 
-    function addSupportedChain(uint256 chainId) external {
+    function bridge_addSupportedChain(uint256 chainId) external {
         LibDiamond.enforceIsContractOwner();
         LibBridge.bridgeStorage().supportedChains[chainId] = true;
         emit ChainSupported(chainId, true);
     }
 
-    function removeSupportedChain(uint256 chainId) external {
+    function bridge_removeSupportedChain(uint256 chainId) external {
         LibDiamond.enforceIsContractOwner();
         LibBridge.bridgeStorage().supportedChains[chainId] = false;
         emit ChainSupported(chainId, false);
     }
 
-    function addRelayer(address relayer) external {
+    function bridge_addRelayer(address relayer) external {
         LibDiamond.enforceIsContractOwner();
         LibBridge.bridgeStorage().relayers[relayer] = true;
         emit RelayerUpdated(relayer, true);
     }
 
-    function removeRelayer(address relayer) external {
+    function bridge_removeRelayer(address relayer) external {
         LibDiamond.enforceIsContractOwner();
         LibBridge.bridgeStorage().relayers[relayer] = false;
         emit RelayerUpdated(relayer, false);
     }
 
-    function setTrustedSigners(address[] calldata signers, uint256 minSigs) external {
+    function bridge_setTrustedSigners(address[] calldata signers, uint256 minSigs) external {
         LibDiamond.enforceIsContractOwner();
         require(signers.length >= minSigs && minSigs > 0, "Bridge: invalid threshold");
         LibBridge.bridgeStorage().trustedSigners = signers;
@@ -216,31 +216,35 @@ contract BridgeFacet is ReentrancyGuard {
         emit TrustedSignerUpdated(signers.length > 0 ? signers[0] : address(0));
     }
 
-    function setBridgeFeeBps(uint256 feeBps) external {
+    function bridge_setBridgeFeeBps(uint256 feeBps) external {
         LibDiamond.enforceIsContractOwner();
         require(feeBps <= 500, "Bridge: fee too high"); // max 5%
         LibBridge.bridgeStorage().bridgeFeeBps = feeBps;
         emit BridgeFeeUpdated(feeBps);
     }
 
-    function setFeeDistributor(address _distributor) external {
+    function bridge_setFeeDistributor(address _distributor) external {
         LibDiamond.enforceIsContractOwner();
-        feeDistributor = _distributor;
+        LibBridge.bridgeStorage().feeDistributor = _distributor;
     }
 
     // ========== View Functions ==========
 
-    function isChainSupported(uint256 chainId) external view returns (bool) {
+    function bridge_isChainSupported(uint256 chainId) external view returns (bool) {
         return LibBridge.isSupportedChain(chainId);
     }
 
-    function isRelayer(address account) external view returns (bool) {
+    function bridge_isRelayer(address account) external view returns (bool) {
         return LibBridge.isRelayer(account);
+    }
+
+    function bridge_feeDistributor() external view returns (address) {
+        return LibBridge.getFeeDistributor();
     }
 
     // ========== Initialization ==========
 
-    function initializeBridge() external {
+    function bridge_initialize() external {
         LibDiamond.enforceIsContractOwner();
         LibBridge.BridgeStorage storage bs = LibBridge.bridgeStorage();
 

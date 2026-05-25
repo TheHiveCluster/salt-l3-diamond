@@ -77,18 +77,18 @@ contract MemeMarketplaceFacet is ReentrancyGuard {
 
     // ==================== Admin ====================
 
-    function setFeeDistributor(address _distributor) external {
+    function meme_setFeeDistributor(address _distributor) external {
         LibDiamond.enforceIsContractOwner();
         marketplaceStorage().feeDistributor = _distributor;
     }
 
-    function setProtocolFee(uint256 feeBps) external {
+    function meme_setProtocolFee(uint256 feeBps) external {
         LibDiamond.enforceIsContractOwner();
         require(feeBps <= 1000, "Marketplace: fee too high"); // max 10%
         marketplaceStorage().protocolFeeBps = feeBps;
     }
 
-    function setRoyalty(address nftContract, uint256 tokenId, address creator, uint256 royaltyBps) external {
+    function meme_setRoyalty(address nftContract, uint256 tokenId, address creator, uint256 royaltyBps) external {
         // Only original creator or diamond owner can set
         LibDiamond.enforceIsContractOwner(); // simplified - in prod check msg.sender == minter
         MarketplaceStorage storage ms = marketplaceStorage();

@@ -2,6 +2,11 @@
 
 **Latest: Agent Identity (ERC-8004 inspired) + On-Chain AvA Betting (Phase 4)** — Full one-shot deployment now ready for testnets.
 
+**Testing Tiers:**
+- **Alpha** → BuildBear sandboxes (`--network buildbear`) — See [BuildBear Deployment Guide](./docs/BUILDBEAR_DEPLOYMENT_GUIDE.md)
+- **Beta** → Base Sepolia
+- **Production** → Mainnet (future)
+
 Full ERC-2535 Diamond for the Intern (SALT) token + Staking on your L3.
 
 > **New contributor or setting up on a fresh machine?**  
@@ -35,6 +40,11 @@ npx hardhat run scripts/deploy-one-shot.ts --network localhost
 See the full guides:
 - **[Contributing & Onboarding Guide](./CONTRIBUTING.md)** ← Start here for setup
 - **[DEPLOYMENT.md](./DEPLOYMENT.md)** ← Detailed deployment instructions
+- **[BuildBear Deployment Guide](./docs/BUILDBEAR_DEPLOYMENT_GUIDE.md)** ← Alpha testing on BuildBear sandboxes (recommended for new features). The one-shot deploy now includes a y/n prompt for Collateral setup.
+
+**Convenience scripts:**
+- `npm run deploy:buildbear`
+- `npm run setup:collateral:buildbear`
 - **[RELEASE_NOTES.md](./RELEASE_NOTES.md)** ← Current status and testing phase notes
 
 This allows anyone to get a fully working on-chain environment in minutes.

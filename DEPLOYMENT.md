@@ -63,7 +63,38 @@ This will:
 
 ---
 
-## 3. How to Use Deployed Addresses
+## 3. BuildBear (Alpha Testing Sandboxes)
+
+BuildBear sandboxes are used for **Alpha** testing. They are private, fast, and can fork any chain (Base, Solana, etc.).
+
+Each sandbox has its own RPC and Chain ID, which change when you create a new one.
+
+### One-shot deployment to BuildBear
+
+```bash
+BUILDBEAR_RPC=https://rpc.buildbear.io/YOUR_SANDBOX_ID \
+BUILDBEAR_CHAIN_ID=31337 \
+NEXT_PUBLIC_BUILDBEAR_NETWORK_LABEL="BuildBear(Base)" \
+npx hardhat run scripts/deploy-one-shot.ts --network buildbear -- --reset
+```
+
+This will:
+- Deploy to your BuildBear sandbox
+- Save the artifact as `deployments/BuildBear.json`
+- Automatically update `frontend/.env.local` with the correct BuildBear variables
+
+### Frontend Connection
+
+After deploying:
+1. Start the frontend
+2. In RainbowKit, you should see your labeled network (e.g. `BuildBear(Base)`)
+3. Click it — RainbowKit will help add the network to MetaMask
+
+**Tip**: Set `NEXT_PUBLIC_BUILDBEAR_NETWORK_LABEL` to something descriptive like `BuildBear(Solana)` or `BuildBear(Arbitrum)` when using different forks.
+
+---
+
+## 4. How to Use Deployed Addresses
 
 After any deployment, addresses are saved in:
 
@@ -71,6 +102,7 @@ After any deployment, addresses are saved in:
 deployments/
   └── localhost.json
   └── baseSepolia.json
+  └── BuildBear.json
 ```
 
 Both the **frontend** and **keeper bot** are configured to read from these files automatically.
