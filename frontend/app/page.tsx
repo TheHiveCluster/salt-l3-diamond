@@ -1,16 +1,21 @@
 'use client'
 
 import { ConnectButton } from '@rainbow-me/rainbowkit'
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
-import { useState } from 'react'
+import { useAccount, useChainId, useReadContract, useSwitchChain, useWriteContract, useWaitForTransactionReceipt, useChains } from 'wagmi'
+import { useState, useEffect } from 'react'
 import { parseUnits, formatUnits } from 'viem'
-import { getDiamondAddress, DIAMOND_ABI } from './lib/contracts'
+import { getDiamondAddress, DIAMOND_ABI, ERC20_ABI, getGamingAssetNFTAddress, GAMING_ASSET_NFT_ABI } from './lib/contracts'
 import { GameBoard } from './components/GameBoard'
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 
 const DIAMOND = getDiamondAddress()
+const GAMING_NFT = getGamingAssetNFTAddress()
 
 export default function Home() {
   const { address, isConnected } = useAccount()
+  const chainId = useChainId()
+  const chains = useChains()
+  const { switchChainAsync } = useSwitchChain()
   const [stakeAmount, setStakeAmount] = useState('10')
   const [withdrawSalt, setWithdrawSalt] = useState('100')
   const [depositUsdc, setDepositUsdc] = useState('1')
@@ -37,6 +42,21 @@ export default function Home() {
   const [avaMatchId, setAvaMatchId] = useState(172341)
   const [avaAgentId1, setAvaAgentId1] = useState(8001)
   const [avaAgentId2, setAvaAgentId2] = useState(8002)
+
+  // === Dock 9 State (unified economics) ===
+  const [dockUsdcAmount, setDockUsdcAmount] = useState('10')
+  const [dockStakeAmount, setDockStakeAmount] = useState('50')
+  const [dockWithdrawSalt, setDockWithdrawSalt] = useState('100')
+  const [chartTimeframe, setChartTimeframe] = useState<'5m' | '1h' | '6h' | '1d' | '1w' | 'all'>('1h')
+  const [priceHistory, setPriceHistory] = useState<any[]>([])
+  const [volumeHistory, setVolumeHistory] = useState<any[]>([]) // {time, deposits, withdrawals}
+
+  // NFT Mint Test (Option A - using existing TestGamingAssetNFT from one-shot)
+  const [nftMintTo, setNftMintTo] = useState('')
+  const [nftTokenId, setNftTokenId] = useState('1001')
+  const [nftUri, setNftUri] = useState('ipfs://test-hero-mint')
+  const [nftLevel, setNftLevel] = useState('1')
+  const [nftPower, setNftPower] = useState('50')
 
   // Simple in-app toast system (no extra deps)
   type Toast = { id: number; message: string; type: 'success' | 'error' | 'info' }
@@ -178,6 +198,42 @@ export default function Home() {
     functionName: 'getBackingRatio',
   })
 
+  // USDC token address from CollateralFacet (needed for approvals)
+  const { data: usdcTokenAddress } = useReadContract({
+    address: DIAMOND,
+    abi: DIAMOND_ABI,
+    functionName: 'usdcToken',
+  })
+
+  // === Dock 9 Live Reads (allowances + reserves) ===
+  const { data: usdcAllowance } = useReadContract({
+    address: usdcTokenAddress as `0x${string}` | undefined,
+    abi: ERC20_ABI,
+    functionName: 'allowance',
+    args: address && usdcTokenAddress ? [address, DIAMOND] : undefined,
+    query: { enabled: !!address && !!usdcTokenAddress },
+  })
+
+  const { data: saltAllowance } = useReadContract({
+    address: DIAMOND,
+    abi: DIAMOND_ABI,
+    functionName: 'allowance',
+    args: address ? [address, DIAMOND] : undefined,
+    query: { enabled: !!address },
+  })
+
+  const { data: usdcReserves } = useReadContract({
+    address: DIAMOND,
+    abi: DIAMOND_ABI,
+    functionName: 'getUSDCReserves',
+  })
+
+  const { data: totalSupply } = useReadContract({
+    address: DIAMOND,
+    abi: DIAMOND_ABI,
+    functionName: 'totalSupply',
+  })
+
   // My Stats (A polish)
   const { data: playerStats } = useReadContract({
     address: DIAMOND,
@@ -187,44 +243,250 @@ export default function Home() {
     query: { enabled: !!address },
   })
 
-  // === Actions ===
-  const stake = () => {
+  // === Dock 9 History Persistence (diamond-address keyed for future deploys) ===
+  const storageKey = `dock9-history-${DIAMOND}-${address || 'anon'}`
+
+  useEffect(() => {
     if (!address) return
-    const amt = parseUnits(stakeAmount || '0', 18)
-    writeContract({
-      address: DIAMOND,
-      abi: DIAMOND_ABI,
-      functionName: 'stake',
-      args: [amt],
-    })
+    try {
+      const saved = localStorage.getItem(storageKey)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        if (parsed.price) setPriceHistory(parsed.price)
+        if (parsed.volume) setVolumeHistory(parsed.volume)
+      }
+    } catch {}
+  }, [address, DIAMOND])
+
+  const saveHistory = (newPrice: any[], newVolume: any[]) => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ price: newPrice, volume: newVolume }))
+    } catch {}
   }
 
-  const claim = () => {
-    writeContract({
-      address: DIAMOND,
-      abi: DIAMOND_ABI,
-      functionName: 'claimRevenueRewards',
-    })
+  const recordVolume = (type: 'deposit' | 'withdraw', amountUsdc: number) => {
+    const now = Date.now()
+    const point = { time: now, deposits: type === 'deposit' ? amountUsdc : 0, withdrawals: type === 'withdraw' ? amountUsdc : 0 }
+    const updated = [...volumeHistory, point].slice(-200) // keep last 200 points
+    setVolumeHistory(updated)
+
+    // synthetic price point from current backing (simple)
+    const backingNum = backing ? Number(backing) / 1e18 : 1
+    const pricePoint = { time: now, price: backingNum * 0.01 } // scaled to ~0.01 target
+    const updatedPrice = [...priceHistory, pricePoint].slice(-200)
+    setPriceHistory(updatedPrice)
+
+    saveHistory(updatedPrice, updated)
   }
 
-  const depositCollateral = () => {
-    const amt = parseUnits(depositUsdc || '0', 6) // assume 6 dec USDC for demo
-    writeContract({
-      address: DIAMOND,
-      abi: DIAMOND_ABI,
-      functionName: 'depositUSDC',
-      args: [amt],
-    })
+  // === Dock 9 Smart Actions (exact amount, conditional approvals) ===
+  const dockApproveUSDC = async () => {
+    if (chainId !== 31337) {
+      showToast('Switch to BuildBear (31337) first', 'error')
+      return
+    }
+    if (!usdcTokenAddress) {
+      showToast('USDC not configured on diamond', 'error')
+      return
+    }
+    try {
+      const amt = parseUnits(dockUsdcAmount || '0', 6)
+      await writeContract({
+        address: usdcTokenAddress as `0x${string}`,
+        abi: ERC20_ABI,
+        functionName: 'approve',
+        args: [DIAMOND, amt],
+      })
+      showToast('USDC approval sent for exact amount', 'info')
+    } catch (e: any) {
+      showToast('USDC approve failed: ' + (e?.message || 'Unknown'), 'error')
+    }
   }
 
-  const withdrawCollateral = () => {
-    const amt = parseUnits(withdrawSalt || '0', 18)
-    writeContract({
-      address: DIAMOND,
-      abi: DIAMOND_ABI,
-      functionName: 'withdrawUSDC',
-      args: [amt],
-    })
+  const dockApproveSALT = async () => {
+    if (chainId !== 31337) {
+      showToast('Switch to BuildBear first', 'error')
+      return
+    }
+    try {
+      const amt = parseUnits(dockStakeAmount || '0', 18)
+      await writeContract({
+        address: DIAMOND,
+        abi: DIAMOND_ABI,
+        functionName: 'approve',
+        args: [DIAMOND, amt],
+      })
+      showToast('SALT approval sent for exact amount', 'info')
+    } catch (e: any) {
+      showToast('SALT approve failed: ' + (e?.message || 'Unknown'), 'error')
+    }
+  }
+
+  const dockDeposit = async () => {
+    if (chainId !== 31337) { showToast('Switch to BuildBear first', 'error'); return }
+    const amt = parseUnits(dockUsdcAmount || '0', 6)
+    const allowance = usdcAllowance ? Number(usdcAllowance) : 0
+    if (allowance < Number(amt)) {
+      showToast('Approve USDC first (exact amount)', 'error')
+      return
+    }
+    try {
+      await writeContract({
+        address: DIAMOND,
+        abi: DIAMOND_ABI,
+        functionName: 'depositUSDC',
+        args: [amt],
+      })
+      recordVolume('deposit', Number(dockUsdcAmount || '0'))
+      showToast('Deposit submitted', 'success')
+    } catch (e: any) {
+      showToast('Deposit failed: ' + (e?.message || ''), 'error')
+    }
+  }
+
+  const dockWithdraw = async () => {
+    if (chainId !== 31337) { showToast('Switch to BuildBear first', 'error'); return }
+    const amt = parseUnits(dockWithdrawSalt || '0', 18)
+    try {
+      await writeContract({
+        address: DIAMOND,
+        abi: DIAMOND_ABI,
+        functionName: 'withdrawUSDC',
+        args: [amt],
+      })
+      recordVolume('withdraw', Number(dockWithdrawSalt || '0') / 100) // rough USDC equivalent
+      showToast('Withdraw submitted', 'success')
+    } catch (e: any) {
+      showToast('Withdraw failed: ' + (e?.message || ''), 'error')
+    }
+  }
+
+  const dockStake = async () => {
+    if (chainId !== 31337) { showToast('Switch to BuildBear first', 'error'); return }
+    const amt = parseUnits(dockStakeAmount || '0', 18)
+    const allowance = saltAllowance ? Number(saltAllowance) : 0
+    if (allowance < Number(amt)) {
+      showToast('Approve SALT first (exact amount)', 'error')
+      return
+    }
+    try {
+      await writeContract({
+        address: DIAMOND,
+        abi: DIAMOND_ABI,
+        functionName: 'stake',
+        args: [amt],
+      })
+      showToast('Stake submitted', 'success')
+    } catch (e: any) {
+      showToast('Stake failed: ' + (e?.message || ''), 'error')
+    }
+  }
+
+  const dockClaim = async () => {
+    if (chainId !== 31337) { showToast('Switch to BuildBear first', 'error'); return }
+    try {
+      await writeContract({
+        address: DIAMOND,
+        abi: DIAMOND_ABI,
+        functionName: 'claimRevenueRewards',
+      })
+      showToast('Claim submitted', 'success')
+    } catch (e: any) {
+      showToast('Claim failed: ' + (e?.message || ''), 'error')
+    }
+  }
+
+  // Legacy actions kept for AvA/Game compatibility (can be removed later)
+  const stake = dockStake
+  const claim = dockClaim
+  const depositCollateral = dockDeposit
+  const withdrawCollateral = dockWithdraw
+  const approveUSDC = dockApproveUSDC
+  const approveSALT = dockApproveSALT
+
+  // === Industry-Standard Wallet Network Flow (BuildBear custom chain) ===
+  // Follows MetaMask + wagmi best practices:
+  // 1. Prefer switchChainAsync (handles connector state properly)
+  // 2. On "chain not found" (4902), auto-call wallet_addEthereumChain then retry switch
+  // 3. Keep manual "Add Network" as fallback for edge cases
+
+  const buildbearRpc = process.env.NEXT_PUBLIC_BUILDBEAR_RPC || ''
+  const buildbearLabel = process.env.NEXT_PUBLIC_BUILDBEAR_NETWORK_LABEL || 'BuildBear'
+
+  const addBuildBearNetwork = async () => {
+    if (typeof window === 'undefined' || !(window as any).ethereum) {
+      showToast('No injected wallet found', 'error')
+      return
+    }
+    try {
+      await (window as any).ethereum.request({
+        method: 'wallet_addEthereumChain',
+        params: [{
+          chainId: '0x7a69',
+          chainName: buildbearLabel,
+          nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+          rpcUrls: [buildbearRpc],
+          blockExplorerUrls: ['https://buildbear.io'],
+        }],
+      })
+      showToast('Network added. Switching now...', 'success')
+      await switchChainAsync?.({ chainId: 31337 })
+    } catch (e: any) {
+      showToast('Add network failed: ' + (e?.message || ''), 'error')
+    }
+  }
+
+  const switchToBuildBear = async () => {
+    if (!switchChainAsync) {
+      showToast('Wallet switch not available', 'error')
+      return
+    }
+
+    try {
+      await switchChainAsync({ chainId: 31337 })
+      showToast('Switched to BuildBear', 'success')
+    } catch (error: any) {
+      // Standard error code when chain is not added to wallet (MetaMask, etc.)
+      const isChainNotAdded = error?.code === 4902 || 
+        (error?.message && error.message.toLowerCase().includes('chain') && error.message.toLowerCase().includes('not'));
+
+      if (isChainNotAdded) {
+        showToast('BuildBear not in wallet — adding it now...', 'info')
+        await addBuildBearNetwork()
+      } else {
+        showToast('Failed to switch: ' + (error?.message || 'Unknown error'), 'error')
+      }
+    }
+  }
+
+  // === NFT Mint Test (Option A) - mint directly to connected wallet on the deployed GamingAssetNFT ===
+  const mintTestNFT = async () => {
+    if (!address) { showToast('Connect wallet first', 'error'); return }
+    if (chainId !== 31337) { showToast('Switch to BuildBear first (use the Switch button)', 'error'); return }
+    if (!GAMING_NFT) { showToast('GamingAssetNFT address not configured', 'error'); return }
+
+    try {
+      const to = (nftMintTo || address) as `0x${string}`
+      const tokenId = BigInt(nftTokenId || '0')
+      const uri = nftUri || 'ipfs://test'
+      const attrs = {
+        level: BigInt(nftLevel || '1'),
+        rarity: BigInt(1),
+        power: BigInt(nftPower || '50'),
+        gameId: '0x0000000000000000000000000000000000000000000000000000000000000000' as `0x${string}`,
+        lastUsed: BigInt(0),
+      }
+
+      await writeContract({
+        address: GAMING_NFT,
+        abi: GAMING_ASSET_NFT_ABI,
+        functionName: 'mint',
+        args: [to, tokenId, uri, attrs],
+      })
+      showToast(`Minting Hero #${nftTokenId} to ${to.slice(0,6)}...`, 'success')
+    } catch (e: any) {
+      showToast('NFT mint failed: ' + (e?.message || ''), 'error')
+    }
   }
 
   // Phase 4: Place bet on AvA match (supports arbitrary agentIds)
@@ -257,9 +519,22 @@ export default function Home() {
             <span className="font-semibold text-xl tracking-tight">SALT</span>
           </div>
           <div className="flex items-center gap-6">
-            <a href="#game" className="hover:text-zinc-400">Game</a>
-            <a href="#stake" className="hover:text-zinc-400">Stake</a>
-            <a href="#collateral" className="hover:text-zinc-400">Collateral</a>
+            <a href="#dock9" className="hover:text-zinc-400 font-medium">Dock 9</a>
+            <a href="#game-full" className="hover:text-zinc-400">Game</a>
+
+            {/* Network status for contract testing (BuildBear focus) */}
+            <div className={`flex items-center gap-2 text-xs px-3 py-1 rounded border font-mono ${chainId === 31337 ? 'border-emerald-700 bg-emerald-950 text-emerald-400' : 'border-red-700 bg-red-950 text-red-400'}`}>
+              {chainId === 31337 ? (
+                '✓ BuildBear'
+              ) : (
+                <>
+                  ⚠ Wrong Chain ({chainId || 'none'})
+                  <button onClick={switchToBuildBear} className="underline hover:no-underline">Switch</button>
+                  <button onClick={addBuildBearNetwork} className="underline hover:no-underline">Add Manually</button>
+                </>
+              )}
+            </div>
+
             <ConnectButton />
           </div>
         </div>
@@ -270,13 +545,47 @@ export default function Home() {
         <h1 className="text-6xl font-bold tracking-tighter mb-4">The Agent-Friendly Economy</h1>
         <p className="text-xl text-zinc-400 mb-8">Play. Stake. Backed by real USDC at 0.01. Revenue to stakers.</p>
         <div className="flex gap-4 justify-center">
-          <a href="#game" className="btn-primary">Play Now</a>
-          <a href="#stake" className="btn-secondary">Start Staking</a>
+          <a href="#dock9" className="btn-primary">Test Economics (Dock 9)</a>
+          <a href="#nft-test" className="btn-secondary">Mint NFT Test</a>
         </div>
       </div>
 
-      {/* GAME — Fully wired lobby (C) */}
-      <div id="game" className="max-w-7xl mx-auto px-6 py-16 border-t border-zinc-800">
+      {/* Strong warning for contract testing */}
+      {chainId !== 31337 && isConnected && (
+        <div className="max-w-4xl mx-auto px-6 mb-6">
+          <div className="bg-red-950 border border-red-700 text-red-300 px-4 py-3 rounded-xl text-sm flex items-center justify-between">
+            <span>
+              ⚠️ You are not on BuildBear (chain 31337). All contract writes (stake, deposit, approve, etc.) will fail or do nothing.
+            </span>
+            <button
+              onClick={switchToBuildBear}
+              className="ml-4 px-3 py-1 bg-red-800 hover:bg-red-700 rounded text-xs font-medium"
+            >
+              Switch to BuildBear
+            </button>
+            <button
+              onClick={addBuildBearNetwork}
+              className="ml-2 px-3 py-1 bg-red-800 hover:bg-red-700 rounded text-xs font-medium"
+            >
+              Add Manually
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Play Teaser — easy entry before Dock 9 */}
+      <div className="max-w-7xl mx-auto px-6 pb-8">
+        <div className="card flex flex-col md:flex-row items-center justify-between gap-4">
+          <div>
+            <div className="font-semibold">Quick Play</div>
+            <div className="text-sm text-zinc-400">Jump into Battleship or watch AI matches (full experience moved below Dock 9)</div>
+          </div>
+          <a href="#game-full" className="btn-primary">Open Full Game Experience</a>
+        </div>
+      </div>
+
+      {/* GAME — Full experience (scroll past Dock 9 or use Quick Play) */}
+      <div id="game-full">
         <h2 className="text-4xl font-semibold tracking-tight mb-8">Play Battleship — Equal Price for Humans & Agents</h2>
 
         {/* Game Mode Selector */}
@@ -857,69 +1166,187 @@ export default function Home() {
           </div>
         )}
       </div>
+      {/* End of full Game experience */}
 
-      {/* STAKING - Fully functional */}
-      <div id="stake" className="max-w-7xl mx-auto px-6 py-16 border-t border-zinc-800">
-        <h2 className="text-4xl font-semibold tracking-tight mb-8">Stake SALT — Earn Real Revenue</h2>
-
-        <div className="grid md:grid-cols-4 gap-6">
-          <div className="card">
-            <div className="text-sm text-zinc-400">Your SALT</div>
-            <div className="text-3xl font-semibold mb-4">
-              {saltBalance ? formatUnits(saltBalance as bigint, 18) : '0.00'}
-            </div>
-            <input className="w-full bg-zinc-900 border border-zinc-700 p-2 rounded mb-2" value={stakeAmount} onChange={e => setStakeAmount(e.target.value)} />
-            <button onClick={stake} disabled={!isConnected || isPending} className="btn-primary w-full">
-              {isPending || isConfirming ? 'Staking...' : 'Stake'}
-            </button>
+      {/* DOCK 9 — Unified Market + Charts + Actions (exact-amount approvals, future-deploy resilient) */}
+      <div id="dock9" className="max-w-7xl mx-auto px-6 py-16 border-t border-zinc-800">
+        <div className="flex items-end justify-between mb-6">
+          <div>
+            <h2 className="text-4xl font-semibold tracking-tight">Dock 9</h2>
+            <p className="text-zinc-400">Live collateral • Staking • Charts • Real on-chain actions</p>
           </div>
-
-          <div className="card">
-            <div className="text-sm text-zinc-400">Currently Staked</div>
-            <div className="text-3xl font-semibold mb-4">
-              {staked ? formatUnits(staked as bigint, 18) : '0.00'}
+          <div className="flex items-center gap-2">
+            <div className={`text-xs px-3 py-1 rounded border font-mono ${chainId === 31337 ? 'border-emerald-700 bg-emerald-950 text-emerald-400' : 'border-red-700 bg-red-950 text-red-400'}`}>
+              {chainId === 31337 ? '✓ BuildBear' : 'Wrong Chain'}
             </div>
-            <div className="text-xs text-zinc-500 mb-2">Total protocol staked: {totalStaked ? formatUnits(totalStaked as bigint, 18) : '0'}</div>
-            <button onClick={claim} disabled={!isConnected || isPending} className="btn-secondary w-full">
-              Claim Revenue Rewards
-            </button>
-            <div className="text-xs mt-2 text-green-400">
-              Pending: {pending ? formatUnits(pending as bigint, 18) : '0'}
-            </div>
-          </div>
-
-          <div className="card col-span-2">
-            <div className="text-sm text-zinc-400 mb-1">Backing Ratio (on-chain)</div>
-            <div className="text-4xl font-semibold text-emerald-400">
-              {backing ? ((Number(backing) / 1e18) * 100).toFixed(1) : '0'}%
-            </div>
-            <div className="text-xs text-zinc-500 mt-1">USDC reserves backing SALT supply (target 100% at 0.01)</div>
+            {chainId !== 31337 && (
+              <button
+                onClick={switchToBuildBear}
+                className="text-xs px-3 py-1 rounded border border-red-700 bg-red-950 text-red-300 hover:bg-red-800"
+              >
+                Switch to BuildBear
+              </button>
+            )}
           </div>
         </div>
-        <p className="text-xs text-zinc-500 mt-4">40% of all protocol fees (bridge, collateral, games) flow to stakers automatically.</p>
-      </div>
 
-      {/* COLLATERAL - Functional (requires USDC on the L3) */}
-      <div id="collateral" className="max-w-7xl mx-auto px-6 py-16 border-t border-zinc-800">
-        <h2 className="text-4xl font-semibold tracking-tight mb-8">USDC Collateral — Mint/Burn SALT at 0.01</h2>
-
-        <div className="grid md:grid-cols-2 gap-6">
-          <div className="card">
-            <h3 className="font-semibold mb-3">Deposit USDC → Mint 100× SALT</h3>
-            <input className="w-full bg-zinc-900 border p-2 rounded mb-2" value={depositUsdc} onChange={e=>setDepositUsdc(e.target.value)} placeholder="USDC amount (6 decimals demo)" />
-            <button onClick={depositCollateral} disabled={!isConnected || isPending} className="btn-primary w-full">
-              Deposit & Mint
-            </button>
-            <div className="text-[10px] text-zinc-500 mt-2">Requires USDC already bridged to this L3 + approved to the diamond.</div>
+        {/* CHARTS */}
+        <div className="card mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <div className="text-lg font-medium">Market Charts</div>
+            <div className="flex gap-1 text-xs">
+              {(['5m','1h','6h','1d','1w','all'] as const).map(tf => (
+                <button key={tf} onClick={() => setChartTimeframe(tf)} className={`px-3 py-1 rounded border ${chartTimeframe === tf ? 'bg-white text-black border-white' : 'border-zinc-700 hover:bg-zinc-800'}`}>
+                  {tf}
+                </button>
+              ))}
+            </div>
           </div>
 
+          {/* Price Chart (synthetic from backing ratio) */}
+          <div className="mb-8">
+            <div className="text-sm text-zinc-400 mb-2">Implied SALT Price (Backed by USDC)</div>
+            <div className="h-64 bg-black border border-zinc-800 rounded-xl p-4">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={priceHistory.length ? priceHistory : [{time: Date.now(), price: backing ? (Number(backing) / 1e18) * 0.01 : 0.01}]}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                  <XAxis dataKey="time" tickFormatter={t => new Date(t).toLocaleTimeString()} />
+                  <YAxis domain={['auto', 'auto']} />
+                  <Tooltip />
+                  <Line type="monotone" dataKey="price" stroke="#10b981" strokeWidth={2} dot={false} name="Implied Price" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Volume Chart — Deposits + Withdrawals (2 lines) */}
+          <div>
+            <div className="text-sm text-zinc-400 mb-2">Volume (USDC) — Deposits vs Withdrawals</div>
+            <div className="h-64 bg-black border border-zinc-800 rounded-xl p-4">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={volumeHistory.length ? volumeHistory : [{time: Date.now(), deposits: 0, withdrawals: 0}]}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                  <XAxis dataKey="time" tickFormatter={t => new Date(t).toLocaleTimeString()} />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Line type="monotone" dataKey="deposits" stroke="#3b82f6" strokeWidth={2} dot={false} name="Deposits" />
+                  <Line type="monotone" dataKey="withdrawals" stroke="#ef4444" strokeWidth={2} dot={false} name="Withdrawals" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="text-[10px] text-zinc-500 mt-1">Client-side session history (resets cleanly on new diamond deploys)</div>
+          </div>
+        </div>
+
+        {/* KEY METRICS (live on-chain + session) */}
+        <div className="grid md:grid-cols-5 gap-4 mb-8">
           <div className="card">
-            <h3 className="font-semibold mb-3">Burn SALT → Withdraw USDC</h3>
-            <input className="w-full bg-zinc-900 border p-2 rounded mb-2" value={withdrawSalt} onChange={e=>setWithdrawSalt(e.target.value)} />
-            <button onClick={withdrawCollateral} disabled={!isConnected || isPending} className="btn-secondary w-full">
-              Withdraw USDC
-            </button>
-            <div className="text-[10px] text-zinc-500 mt-2">Small fee + circuit breaker protection apply.</div>
+            <div className="text-xs text-zinc-400">USDC Reserves (TVL)</div>
+            <div className="text-3xl font-semibold mt-1">{usdcReserves ? (Number(usdcReserves) / 1e6).toFixed(2) : '0.00'}</div>
+          </div>
+          <div className="card">
+            <div className="text-xs text-zinc-400">Total Staked</div>
+            <div className="text-3xl font-semibold mt-1">{totalStaked ? (Number(totalStaked) / 1e18).toFixed(0) : '0'}</div>
+          </div>
+          <div className="card">
+            <div className="text-xs text-zinc-400">Backing Ratio</div>
+            <div className="text-3xl font-semibold mt-1 text-emerald-400">{backing ? ((Number(backing) / 1e18) * 100).toFixed(1) : '0'}%</div>
+          </div>
+          <div className="card">
+            <div className="text-xs text-zinc-400">Your Staked</div>
+            <div className="text-3xl font-semibold mt-1">{staked ? (Number(staked) / 1e18).toFixed(2) : '0'}</div>
+            <div className="text-xs text-green-400 mt-1">Pending: {pending ? (Number(pending) / 1e18).toFixed(4) : '0'}</div>
+          </div>
+          <div className="card">
+            <div className="text-xs text-zinc-400">Session Volume</div>
+            <div className="text-sm mt-1">In: <span className="text-blue-400">{volumeHistory.reduce((s, p) => s + (p.deposits || 0), 0).toFixed(2)}</span> • Out: <span className="text-red-400">{volumeHistory.reduce((s, p) => s + (p.withdrawals || 0), 0).toFixed(2)}</span></div>
+          </div>
+        </div>
+
+        {/* ACTIONS — Smart exact-amount approvals */}
+        <div className="grid md:grid-cols-3 gap-6">
+          {/* Deposit */}
+          <div className="card">
+            <div className="font-medium mb-3">Deposit USDC → Mint SALT</div>
+            <input value={dockUsdcAmount} onChange={e => setDockUsdcAmount(e.target.value)} className="w-full bg-zinc-900 border border-zinc-700 p-2 rounded mb-3 font-mono" />
+            {usdcAllowance && Number(usdcAllowance) < Number(parseUnits(dockUsdcAmount || '0', 6)) && (
+              <button onClick={dockApproveUSDC} disabled={!isConnected || isPending} className="btn-secondary w-full mb-2 text-xs">
+                Approve exact {dockUsdcAmount} USDC
+              </button>
+            )}
+            <button onClick={dockDeposit} disabled={!isConnected || isPending} className="btn-primary w-full">Deposit & Mint</button>
+            <div className="text-[10px] text-zinc-500 mt-2">Current USDC allowance: {usdcAllowance ? (Number(usdcAllowance) / 1e6).toFixed(2) : '0'}</div>
+          </div>
+
+          {/* Withdraw */}
+          <div className="card">
+            <div className="font-medium mb-3">Burn SALT → Withdraw USDC</div>
+            <input value={dockWithdrawSalt} onChange={e => setDockWithdrawSalt(e.target.value)} className="w-full bg-zinc-900 border border-zinc-700 p-2 rounded mb-3 font-mono" />
+            <button onClick={dockWithdraw} disabled={!isConnected || isPending} className="btn-primary w-full">Withdraw USDC</button>
+            <div className="text-[10px] text-zinc-500 mt-2">Small fee + circuit breaker apply</div>
+          </div>
+
+          {/* Stake */}
+          <div className="card">
+            <div className="font-medium mb-3">Stake SALT (Earn Revenue)</div>
+            <input value={dockStakeAmount} onChange={e => setDockStakeAmount(e.target.value)} className="w-full bg-zinc-900 border border-zinc-700 p-2 rounded mb-3 font-mono" />
+            {saltAllowance && Number(saltAllowance) < Number(parseUnits(dockStakeAmount || '0', 18)) && (
+              <button onClick={dockApproveSALT} disabled={!isConnected || isPending} className="btn-secondary w-full mb-2 text-xs">
+                Approve exact {dockStakeAmount} SALT
+              </button>
+            )}
+            <button onClick={dockStake} disabled={!isConnected || isPending} className="btn-primary w-full">Stake</button>
+            <button onClick={dockClaim} disabled={!isConnected || isPending} className="btn-secondary w-full mt-2 text-xs">Claim Revenue Rewards</button>
+            <div className="text-[10px] text-zinc-500 mt-2">Current SALT allowance: {saltAllowance ? (Number(saltAllowance) / 1e18).toFixed(2) : '0'}</div>
+          </div>
+        </div>
+
+        <div className="text-xs text-zinc-500 mt-6">All actions use exact amounts you enter. Approvals only appear when needed. Data driven from diamond — works on future deploys.</div>
+      </div>
+
+      {/* NFT MINT TEST — Option A: Use the TestGamingAssetNFT already deployed by one-shot */}
+      <div id="nft-test" className="max-w-7xl mx-auto px-6 py-12 border-t border-zinc-800">
+        <h2 className="text-3xl font-semibold tracking-tight mb-2">NFT Mint Test</h2>
+        <p className="text-zinc-400 mb-6">Mint directly on the GamingAssetNFT from the one-shot deploy. Use this to verify NFTs appear in your wallet.</p>
+
+        <div className="card max-w-2xl">
+          <div className="text-sm text-zinc-400 mb-1">Collection</div>
+          <div className="font-mono text-xs mb-4 break-all text-emerald-400">{GAMING_NFT || 'Not configured'}</div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <div className="text-xs text-zinc-400 mb-1">Mint To (leave empty = your wallet)</div>
+              <input value={nftMintTo} onChange={e => setNftMintTo(e.target.value)} placeholder={address || '0x...'} className="w-full bg-zinc-900 border border-zinc-700 p-2 rounded text-sm font-mono" />
+            </div>
+            <div>
+              <div className="text-xs text-zinc-400 mb-1">Token ID</div>
+              <input value={nftTokenId} onChange={e => setNftTokenId(e.target.value)} className="w-full bg-zinc-900 border border-zinc-700 p-2 rounded text-sm font-mono" />
+            </div>
+            <div className="md:col-span-2">
+              <div className="text-xs text-zinc-400 mb-1">Metadata URI</div>
+              <input value={nftUri} onChange={e => setNftUri(e.target.value)} className="w-full bg-zinc-900 border border-zinc-700 p-2 rounded text-sm font-mono" />
+            </div>
+            <div>
+              <div className="text-xs text-zinc-400 mb-1">Level</div>
+              <input value={nftLevel} onChange={e => setNftLevel(e.target.value)} className="w-full bg-zinc-900 border border-zinc-700 p-2 rounded text-sm font-mono" />
+            </div>
+            <div>
+              <div className="text-xs text-zinc-400 mb-1">Power</div>
+              <input value={nftPower} onChange={e => setNftPower(e.target.value)} className="w-full bg-zinc-900 border border-zinc-700 p-2 rounded text-sm font-mono" />
+            </div>
+          </div>
+
+          <button
+            onClick={mintTestNFT}
+            disabled={!isConnected || isPending}
+            className="mt-6 btn-primary w-full"
+          >
+            Mint Test Hero NFT
+          </button>
+
+          <div className="text-[10px] text-zinc-500 mt-3">
+            This calls the direct <code>mint</code> on the deployed GamingAssetNFT. After success, the NFT should appear in your wallet (may need to import the collection).
           </div>
         </div>
       </div>

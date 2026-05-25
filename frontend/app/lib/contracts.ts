@@ -1,10 +1,34 @@
 // frontend/app/lib/contracts.ts
 // Minimal ABIs + addresses for core SALT flows (Staking + Collateral + GamePayment)
 
+export const ERC20_ABI = [
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function balanceOf(address) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+] as const;
+
+// Minimal ABI for the TestGamingAssetNFT (used in Option A NFT mint testing)
+export const GAMING_ASSET_NFT_ABI = [
+  "function balanceOf(address owner) view returns (uint256)",
+  "function ownerOf(uint256 tokenId) view returns (address)",
+  "function tokenURI(uint256 tokenId) view returns (string)",
+  "function getAttributes(uint256 tokenId) view returns (tuple(uint256 level, uint256 rarity, uint256 power, bytes32 gameId, uint256 lastUsed))",
+  // Direct mint used in one-shot deploy (and for our test UI)
+  "function mint(address to, uint256 tokenId, string uri, tuple(uint256 level, uint256 rarity, uint256 power, bytes32 gameId, uint256 lastUsed) attrs)",
+  // Phase 3 path
+  "function mintForAgent(uint256 agentId, uint256 tokenId, string uri, tuple(uint256 level, uint256 rarity, uint256 power, bytes32 gameId, uint256 lastUsed) attrs)",
+] as const;
+
 export const DIAMOND_ABI = [
   // ERC20 views
   "function balanceOf(address) view returns (uint256)",
   "function decimals() view returns (uint8)",
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+
+  // Collateral specific
+  "function usdcToken() view returns (address)",
 
   // Staking
   "function stake(uint256 amount)",
@@ -19,6 +43,7 @@ export const DIAMOND_ABI = [
   "function withdrawUSDC(uint256 saltAmount)",
   "function getUSDCReserves() view returns (uint256)",
   "function getBackingRatio() view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
 
   // GamePayment (for C)
   "function payToEnterMatch(uint256 matchId, address opponent)",
@@ -81,8 +106,25 @@ export const DIAMOND_ABI = [
 export function getDiamondAddress(): `0x${string}` {
   const addr = process.env.NEXT_PUBLIC_DIAMOND_ADDRESS as `0x${string}` | undefined;
   if (!addr || addr === '0x...') {
-    // Fallback for local dev after running deploy-one-shot
-    return '0x5FbDB2315678afecb367f032d93F642f64180aa3'; // common hardhat first deploy
+    // TEMP: Hardhat fallback removed for BuildBear contract testing.
+    // To re-enable for local Hardhat dev, restore the line below and update wagmi.ts accordingly.
+    // return '0x5FbDB2315678afecb367f032d93F642f64180aa3';
+    throw new Error(
+      'NEXT_PUBLIC_DIAMOND_ADDRESS is not set. ' +
+      'For BuildBear testing use the value from deployments/BuildBear.json. ' +
+      'For local Hardhat dev, restore the fallback in this file (see dev remarks).'
+    );
   }
   return addr;
+}
+
+// Load TestGamingAssetNFT address (used for NFT mint testing - Option A)
+export function getGamingAssetNFTAddress(): `0x${string}` | undefined {
+  // Primary: explicit env var (recommended when using deployments/BuildBear.json)
+  const fromEnv = process.env.NEXT_PUBLIC_GAMING_ASSET_NFT as `0x${string}` | undefined;
+  if (fromEnv && fromEnv !== '0x...') return fromEnv;
+
+  // Fallback for the latest one-shot deploy key
+  const fromDeploy = '0xBbe89C54101d28424208F3FE59C4c39905da9aE2' as `0x${string}`;
+  return fromDeploy;
 }
